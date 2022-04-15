@@ -64,7 +64,6 @@ func NewRNDZTransport(upgrader transport.Upgrader, rcmgr network.ResourceManager
 var dialMatcher = mafmt.TCP
 
 func (t *RndzTransport) CanDial(addr ma.Multiaddr) bool {
-	log.Debugf("can dail %s", addr)
 	return dialMatcher.Matches(addr)
 }
 
@@ -86,7 +85,6 @@ func (t *RndzTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID)
 	if err != nil {
 		return nil, err
 	}
-	log.Debugf("rndz server %s", rndzServerAddr)
 
 	c := tcp.New(rndzServerAddr.String(), t.Id.String(), netip.AddrPort{})
 	defer c.Close()
