@@ -7,7 +7,7 @@ require (
 	github.com/libp2p/go-libp2p-core v0.15.0
 	github.com/multiformats/go-multiaddr v0.5.0
 	github.com/multiformats/go-multiaddr-fmt v0.1.0
-	github.com/optman/rndz-go v0.0.0-20220415140046-3ac8ee452123
+	github.com/optman/rndz-go v0.0.0-20220418084458-71bda13b0bfe
 )
 
 require (

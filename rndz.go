@@ -1,13 +1,14 @@
-package rndz
+package tcp
 
 import (
 	"context"
-	"net"
+	"errors"
 	"net/netip"
 
+	ic "github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/transport"
+	tpt "github.com/libp2p/go-libp2p-core/transport"
 
 	logging "github.com/ipfs/go-log/v2"
 	ma "github.com/multiformats/go-multiaddr"
@@ -19,39 +20,30 @@ import (
 
 var log = logging.Logger("rndz-tcp-tpt")
 
-type Option func(*RndzTransport) error
+type Option func(*transport) error
 
-func WithId(id peer.ID) Option {
-	return func(t *RndzTransport) error {
-		t.Id = id
-		return nil
-	}
+type transport struct {
+	upgrader tpt.Upgrader
+	rcmgr    network.ResourceManager
+	peerId   peer.ID
 }
 
-func WithRndzServer(addr string) Option {
-	return func(t *RndzTransport) (err error) {
-		t.RndzServer, err = ma.NewMultiaddr(addr)
-		return
-	}
-}
+var _ tpt.Transport = &transport{}
 
-type RndzTransport struct {
-	Upgrader   transport.Upgrader
-	rcmgr      network.ResourceManager
-	RndzServer ma.Multiaddr
-	Id         peer.ID
-}
-
-var _ transport.Transport = &RndzTransport{}
-
-func NewRNDZTransport(upgrader transport.Upgrader, rcmgr network.ResourceManager, opts ...Option) (*RndzTransport, error) {
+func NewTransport(key ic.PrivKey, upgrader tpt.Upgrader, rcmgr network.ResourceManager, opts ...Option) (*transport, error) {
 	if rcmgr == nil {
 		rcmgr = network.NullResourceManager
 	}
 
-	tr := &RndzTransport{
-		Upgrader: upgrader,
+	peerId, err := peer.IDFromPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+
+	tr := &transport{
+		upgrader: upgrader,
 		rcmgr:    rcmgr,
+		peerId:   peerId,
 	}
 	for _, o := range opts {
 		if err := o(tr); err != nil {
@@ -63,11 +55,11 @@ func NewRNDZTransport(upgrader transport.Upgrader, rcmgr network.ResourceManager
 
 var dialMatcher = mafmt.TCP
 
-func (t *RndzTransport) CanDial(addr ma.Multiaddr) bool {
+func (t *transport) CanDial(addr ma.Multiaddr) bool {
 	return dialMatcher.Matches(addr)
 }
 
-func (t *RndzTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (transport.CapableConn, error) {
+func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tpt.CapableConn, error) {
 	log.Debugf("dail %s  %s", raddr, p)
 
 	connScope, err := t.rcmgr.OpenConnection(network.DirOutbound, true)
@@ -86,7 +78,7 @@ func (t *RndzTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID)
 		return nil, err
 	}
 
-	c := tcp.New(rndzServerAddr.String(), t.Id.String(), netip.AddrPort{})
+	c := tcp.New(rndzServerAddr.String(), t.peerId.String(), netip.AddrPort{})
 	defer c.Close()
 	conn, err := c.Connect(ctx, p.String())
 	if err != nil {
@@ -98,27 +90,34 @@ func (t *RndzTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID)
 		return nil, err
 	}
 
-	return t.Upgrader.Upgrade(ctx, t, maConn, network.DirOutbound, p, connScope)
+	return t.upgrader.Upgrade(ctx, t, maConn, network.DirOutbound, p, connScope)
 }
 
-func (t *RndzTransport) Listen(laddr ma.Multiaddr) (transport.Listener, error) {
+func (t *transport) Listen(addr ma.Multiaddr) (tpt.Listener, error) {
+	log.Debugf("Listen %s", addr)
 
-	listenAddr, err := manet.ToNetAddr(laddr)
+	localAddr, rndzAddr := ma.SplitFunc(addr, func(c ma.Component) bool {
+		return c.Protocol().Code == ma.P_CIRCUIT
+	})
+
+	laddr, err := manet.ToNetAddr(localAddr)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid listen addr")
 	}
 
-	log.Debugf("listen on %s", listenAddr)
-	log.Debugf("rndz server %s", t.RndzServer)
-
-	rndzServer, err := manet.ToNetAddr(t.RndzServer)
-	if err != nil {
-		return nil, err
+	if rndzAddr != nil {
+		_, rndzAddr = ma.SplitFirst(rndzAddr)
+	} else {
+		return nil, errors.New("invalid listen addr")
 	}
 
-	//NOTE: rndzServer and listenAddr must be the same ip family
-	c := tcp.New(rndzServer.String(), t.Id.String(), listenAddr.(*net.TCPAddr).AddrPort())
-	listener, err := c.Listen(context.Background())
+	raddr, err := manet.ToNetAddr(rndzAddr)
+	if err != nil {
+		return nil, errors.New("invalid listen addr")
+	}
+
+	rndz := tcp.New(raddr.String(), t.peerId.String(), netip.MustParseAddrPort(laddr.String()))
+	listener, err := rndz.Listen(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -128,17 +127,17 @@ func (t *RndzTransport) Listen(laddr ma.Multiaddr) (transport.Listener, error) {
 		return nil, err
 	}
 
-	return t.Upgrader.UpgradeListener(t, maListener), nil
+	return t.upgrader.UpgradeListener(t, maListener), nil
 }
 
-func (t *RndzTransport) Protocols() []int {
+func (t *transport) Protocols() []int {
 	return []int{ma.P_TCP}
 }
 
-func (t *RndzTransport) Proxy() bool {
+func (t *transport) Proxy() bool {
 	return false
 }
 
-func (t *RndzTransport) String() string {
+func (t *transport) String() string {
 	return "RNDZ-TCP"
 }
