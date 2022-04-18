@@ -16,6 +16,7 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 
 	"github.com/optman/rndz-go/client/tcp"
+	ra "github.com/optman/rndz-multiaddr"
 )
 
 var log = logging.Logger("rndz-tcp-tpt")
@@ -27,6 +28,8 @@ type transport struct {
 	rcmgr    network.ResourceManager
 	peerId   peer.ID
 }
+
+var InvalidListenAddr = errors.New("invalid listen addr")
 
 var _ tpt.Transport = &transport{}
 
@@ -96,24 +99,19 @@ func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tp
 func (t *transport) Listen(addr ma.Multiaddr) (tpt.Listener, error) {
 	log.Debugf("Listen %s", addr)
 
-	localAddr, rndzAddr := ma.SplitFunc(addr, func(c ma.Component) bool {
-		return c.Protocol().Code == ma.P_CIRCUIT
-	})
+	localAddr, rndzAddr := ra.SplitListenAddr(addr)
+	if rndzAddr == nil {
+		return nil, InvalidListenAddr
+	}
 
 	laddr, err := manet.ToNetAddr(localAddr)
 	if err != nil {
-		return nil, errors.New("invalid listen addr")
-	}
-
-	if rndzAddr != nil {
-		_, rndzAddr = ma.SplitFirst(rndzAddr)
-	} else {
-		return nil, errors.New("invalid listen addr")
+		return nil, InvalidListenAddr
 	}
 
 	raddr, err := manet.ToNetAddr(rndzAddr)
 	if err != nil {
-		return nil, errors.New("invalid listen addr")
+		return nil, InvalidListenAddr
 	}
 
 	rndz := tcp.New(raddr.String(), t.peerId.String(), netip.MustParseAddrPort(laddr.String()))
